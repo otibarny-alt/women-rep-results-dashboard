@@ -70,6 +70,13 @@ def to_int(v):
     except Exception:
         return 0
 
+def active_party_code():
+    try:
+        r=_http.get(SIMULATION_BASE_URL.rstrip('/')+'/api/party-branding',timeout=(3,8),headers={'Accept':'application/json'})
+        code=str((r.json().get('brand') or {}).get('code') or 'ODM').upper() if r.ok else 'ODM'
+    except Exception: code='ODM'
+    return code if code in {'ODM','UDA'} else 'ODM'
+
 def membership_registered(snapshot, county='', constituency='', ward='', poll_station=''):
     def authoritative_count(selected_constituency='', selected_ward='', selected_station=''):
         params = {
@@ -276,15 +283,16 @@ def load_registered():
     return idx
 
 
-def fetch_snapshot(force=False):
+def fetch_snapshot(force=False,party_code=''):
     global _dashboard_path
+    party_code=str(party_code or active_party_code()).upper()
     now = time.time()
-    if not force and _cache['snapshot'] is not None and now - _cache['snapshot_at'] < CACHE_SECONDS:
+    if not force and _cache['snapshot'] is not None and _cache.get('party_code')==party_code and now - _cache['snapshot_at'] < CACHE_SECONDS:
         return _cache['snapshot']
 
     with _fetch_lock:
         now = time.time()
-        if not force and _cache['snapshot'] is not None and now - _cache['snapshot_at'] < CACHE_SECONDS:
+        if not force and _cache['snapshot'] is not None and _cache.get('party_code')==party_code and now - _cache['snapshot_at'] < CACHE_SECONDS:
             return _cache['snapshot']
         if not SIMULATION_BASE_URL or not SIMULATION_DASHBOARD_API_KEY:
             raise RuntimeError('Simulation dashboard connection is not configured.')
@@ -305,6 +313,7 @@ def fetch_snapshot(force=False):
             for path in paths:
                 r = _http.get(
                     f'{SIMULATION_BASE_URL}{path}',
+                    params={'party_code':party_code},
                     headers={'X-Dashboard-Key': SIMULATION_DASHBOARD_API_KEY},
                     timeout=(3.0, UPSTREAM_TIMEOUT_SECONDS),
                 )
@@ -316,18 +325,19 @@ def fetch_snapshot(force=False):
             if data is None:
                 raise RuntimeError('Women Representative simulation API unavailable (' + '; '.join(errors) + ')')
             _cache['snapshot'] = data
+            _cache['party_code'] = party_code
             _cache['snapshot_at'] = time.time()
             _cache['last_error'] = ''
             return data
         except Exception as exc:
             _cache['last_error'] = str(exc)
-            if _cache['snapshot'] is not None:
+            if _cache['snapshot'] is not None and _cache.get('party_code')==party_code:
                 return _cache['snapshot']
             raise RuntimeError(f'Voting simulation is temporarily unavailable: {exc}')
 
 
-def build_summary(county='', constituency='', ward=''):
-    snap = fetch_snapshot()
+def build_summary(county='', constituency='', ward='',party_code=''):
+    party_code=str(party_code or active_party_code()).upper();snap = fetch_snapshot(party_code=party_code)
     geo = load_geo()
 
     key = (norm(county), norm(constituency), norm(ward))
@@ -413,7 +423,7 @@ def build_summary(county='', constituency='', ward=''):
     candidates.sort(key=lambda x: (-x['votes'], x['candidate'].lower()))
 
     return {
-        'filters': {'county': county, 'constituency': constituency, 'ward': ward},
+        'party_code':party_code,'filters': {'county': county, 'constituency': constituency, 'ward': ward},
         'totals': {
             'registered_voters': registered,
             'candidate_selections': candidate_selections,
@@ -436,7 +446,7 @@ def build_summary(county='', constituency='', ward=''):
         'warning': _cache['last_error'] if _cache['last_error'] else '',
     }
 
-def build_stream_status(county='', constituency='', ward='', submission_status='all', page=1, page_size=100):
+def build_stream_status(county='', constituency='', ward='', submission_status='all', page=1, page_size=100,party_code=''):
     """Fast paginated stream submission view built from local hierarchy + cached live snapshot."""
     geo = load_geo()
     key = (norm(county), norm(constituency), norm(ward))
@@ -446,7 +456,7 @@ def build_stream_status(county='', constituency='', ward='', submission_status='
     # list does not create a second upstream request during normal page loading.
     snap = _cache.get('snapshot')
     if snap is None:
-        snap = fetch_snapshot()
+        snap = fetch_snapshot(party_code=party_code)
 
     live_by_geo = {}
     live_by_stream = {}
@@ -537,7 +547,7 @@ def build_stream_status(county='', constituency='', ward='', submission_status='
 @app.get('/')
 @login_required
 def index():
-    return render_template('index.html', auth_enabled=bool(AUTH_USERNAME and AUTH_PASSWORD_HASH))
+    return render_template('index.html', auth_enabled=bool(AUTH_USERNAME and AUTH_PASSWORD_HASH),active_party_code=active_party_code())
 
 
 @app.get('/api/summary')
@@ -547,7 +557,7 @@ def api_summary():
     if not county:
         return jsonify({'error': 'Select a county before loading results. National presentation is disabled for performance.'}), 400
     try:
-        return jsonify(build_summary(county, request.args.get('constituency', ''), request.args.get('ward', '')))
+        return jsonify(build_summary(county, request.args.get('constituency', ''), request.args.get('ward', ''),request.args.get('party_code','')))
     except Exception as exc:
         return jsonify({'error': str(exc)}), 503
 
@@ -565,6 +575,7 @@ def api_stream_status():
             request.args.get('submission_status', 'all'),
             request.args.get('page', 1),
             request.args.get('page_size', 100),
+            request.args.get('party_code',''),
         ))
     except Exception as exc:
         return jsonify({'error': str(exc)}), 503
@@ -692,7 +703,7 @@ def api_email_results():
         recipient = str(payload.get('recipient') or '').strip()
         if not valid_email(recipient):
             return jsonify({'error': 'Enter a valid recipient email address.'}), 400
-        summary = build_summary(payload.get('county',''), payload.get('constituency',''), payload.get('ward',''))
+        summary = build_summary(payload.get('county',''), payload.get('constituency',''), payload.get('ward',''),payload.get('party_code',''))
         pdf_bytes = build_results_pdf(summary)
         send_results_email(recipient, pdf_bytes, summary)
         return jsonify({'ok': True, 'message': f'Results PDF emailed to {recipient}.'})
@@ -728,7 +739,7 @@ def api_wards():
 @login_required
 def api_refresh():
     try:
-        fetch_snapshot(force=True)
+        fetch_snapshot(force=True,party_code=request.args.get('party_code',''))
         return jsonify({'success': True})
     except Exception as exc:
         return jsonify({'success': False, 'error': str(exc)}), 503

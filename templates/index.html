@@ -19,6 +19,7 @@
 <div class="wrap">
  <div class="controls">
   <span class="badge">TRAINING / SIMULATION ONLY</span>
+  <select id="partyCode" aria-label="Party"><option value="ODM" {% if active_party_code=='ODM' %}selected{% endif %}>ODM Results</option><option value="UDA" {% if active_party_code=='UDA' %}selected{% endif %}>UDA Results</option></select>
   <select id="county" required><option value="">Select County — Required</option></select>
   <select id="constituency" disabled><option value="">All Constituencies</option></select>
   <select id="ward" disabled><option value="">All Wards</option></select>
@@ -67,7 +68,7 @@
 <script>
 const $=id=>document.getElementById(id), fmt=n=>Number(n||0).toLocaleString();
 let chart=null, busy=false, streamBusy=false, streamPage=1, streamTotalPages=1;
-function query(){return '?county='+encodeURIComponent($('county').value)+'&constituency='+encodeURIComponent($('constituency').value)+'&ward='+encodeURIComponent($('ward').value)}
+function query(){return '?party_code='+encodeURIComponent($('partyCode').value)+'&county='+encodeURIComponent($('county').value)+'&constituency='+encodeURIComponent($('constituency').value)+'&ward='+encodeURIComponent($('ward').value)}
 async function getJSON(url,opts){const r=await fetch(url,opts||{});const d=await r.json();if(!r.ok)throw new Error(d.error||('HTTP '+r.status));return d}
 async function loadLocations(){
  try{const rows=await getJSON('/api/counties');rows.forEach(x=>$('county').add(new Option(x.label,x.value)))}catch(e){$('status').textContent='Could not load county list: '+e.message}
@@ -82,7 +83,7 @@ function render(d){
 }
 
 function streamQuery(page){
- return '?county='+encodeURIComponent($('county').value)+'&constituency='+encodeURIComponent($('constituency').value)+'&ward='+encodeURIComponent($('ward').value)+'&submission_status='+encodeURIComponent($('submissionStatus').value)+'&page='+encodeURIComponent(page||1)+'&page_size=100';
+ return '?party_code='+encodeURIComponent($('partyCode').value)+'&county='+encodeURIComponent($('county').value)+'&constituency='+encodeURIComponent($('constituency').value)+'&ward='+encodeURIComponent($('ward').value)+'&submission_status='+encodeURIComponent($('submissionStatus').value)+'&page='+encodeURIComponent(page||1)+'&page_size=100';
 }
 function renderStreamStatus(d){
  $('streamExpected').textContent=fmt(d.counts.expected_streams);$('streamSubmitted').textContent=fmt(d.counts.submitted);$('streamPending').textContent=fmt(d.counts.not_submitted);$('streamFiltered').textContent=fmt(d.counts.filtered);
@@ -110,7 +111,7 @@ $('emailResultsBtn').addEventListener('click',async()=>{
   const btn=$('emailResultsBtn'), oldText=btn.textContent;
   btn.disabled=true;btn.textContent='Sending PDF…';
   try{
-    const d=await getJSON('/api/email-results',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient:email,county:$('county').value,constituency:$('constituency').value,ward:$('ward').value})});
+    const d=await getJSON('/api/email-results',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient:email,party_code:$('partyCode').value,county:$('county').value,constituency:$('constituency').value,ward:$('ward').value})});
     alert(d.message||'Results PDF emailed successfully.');
   }catch(e){alert('Email failed: '+e.message)}finally{btn.disabled=false;btn.textContent=oldText}
 });
